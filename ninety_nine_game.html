@@ -1,0 +1,495 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>99</title>
+
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+<style>
+  body { font-family: -apple-system, "PingFang TC", "Microsoft JhengHei", sans-serif; }
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: translateY(0); } }
+  .animate-fade-in { animation: fadeIn 0.25s ease-out; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel">
+const { useState, useEffect } = React;
+
+// --- Card helpers ---
+const SUITS = ['♠', '♥', '♦', '♣'];
+const rankLabel = (rank) => rank === 1 ? 'A' : rank === 11 ? 'J' : rank === 12 ? 'Q' : rank === 13 ? 'K' : String(rank);
+const isRed = (suit) => suit === '♥' || suit === '♦';
+const cardLabel = (c) => `${rankLabel(c.rank)}${c.suit}`;
+const playerNames = ['你', '電腦1', '電腦2', '電腦3'];
+const playerName = (i) => playerNames[i];
+
+const shuffleArray = (array) => {
+  const newArr = [...array];
+  for (let i = newArr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [newArr[i], newArr[j]] = [newArr[j], newArr[i]];
+  }
+  return newArr;
+};
+
+function createDeck() {
+  const deck = [];
+  let id = 0;
+  SUITS.forEach(suit => {
+    for (let rank = 1; rank <= 13; rank++) {
+      deck.push({ id: id++, suit, rank });
+    }
+  });
+  return deck;
+}
+
+// 功能牌：黑桃A、4、5、10、J、Q、K
+function isFunctionCard(card) {
+  if (card.rank === 1 && card.suit === '♠') return true;
+  return [4, 5, 10, 11, 12, 13].includes(card.rank);
+}
+
+function cardEffect(card) {
+  if (card.rank === 1 && card.suit === '♠') return 'reset0';
+  if (card.rank === 1) return 'add1';
+  if ([2, 3, 6, 7, 8, 9].includes(card.rank)) return 'add';
+  if (card.rank === 4) return 'backOne';
+  if (card.rank === 5) return 'chooseNext';
+  if (card.rank === 10) return 'plusMinus10';
+  if (card.rank === 11) return 'skipOne';
+  if (card.rank === 12) return 'plusMinus20';
+  if (card.rank === 13) return 'setTo99';
+}
+
+function cardAddValue(card) {
+  return card.rank === 1 ? 1 : card.rank;
+}
+
+function cardBadge(card) {
+  switch (cardEffect(card)) {
+    case 'reset0': return '歸零';
+    case 'add1': return '+1';
+    case 'add': return `+${card.rank}`;
+    case 'backOne': return '反轉方向';
+    case 'chooseNext': return '指定下家';
+    case 'plusMinus10': return '±10';
+    case 'skipOne': return 'PASS';
+    case 'plusMinus20': return '±20';
+    case 'setTo99': return '=99';
+  }
+}
+
+function nextActiveFrom(active, fromIdx, dir) {
+  let idx = fromIdx;
+  for (let i = 0; i < 4; i++) {
+    idx = (idx + dir + 4) % 4;
+    if (active[idx]) return idx;
+  }
+  return fromIdx;
+}
+
+// --- Game engine ---
+function initGame() {
+  let deck = shuffleArray(createDeck());
+  const hands = [[], [], [], []];
+  for (let round = 0; round < 5; round++) {
+    for (let p = 0; p < 4; p++) hands[p].push(deck.pop());
+  }
+  // 抽出一張非功能牌當底牌，抽到的功能牌放回牌堆底部
+  const skipped = [];
+  let topCard = null;
+  while (deck.length > 0) {
+    const c = deck.pop();
+    if (isFunctionCard(c)) { skipped.push(c); } else { topCard = c; break; }
+  }
+  deck = [...skipped, ...deck];
+
+  // 底牌翻出來就等於已經算進點數了（底牌一定是普通數字牌，所以就是直接 +它的點數）
+  const total = topCard ? cardAddValue(topCard) : 0;
+
+  return {
+    deck, hands,
+    active: [true, true, true, true],
+    total,
+    turn: 0,
+    direction: 1, // 1 = 順時針，-1 = 逆時針
+    topCard,
+    phase: 'playing', // 'playing' | 'gameover'
+    log: [`遊戲開始！底牌是 ${topCard ? cardLabel(topCard) : '-'}，點數變成 ${total}，輪到你出牌。`],
+    winner: null,
+  };
+}
+
+// choice: 10/Q 用 '+' 或 '-'；5 用被指定的玩家編號
+function playCard(game, playerIdx, cardId, choice) {
+  let hands = game.hands.map(h => [...h]);
+  let deck = [...game.deck];
+  let log = [...game.log];
+  let active = [...game.active];
+  let total = game.total;
+  const totalBeforePlay = game.total;
+  let direction = game.direction;
+
+  const idx = hands[playerIdx].findIndex(c => c.id === cardId);
+  const card = hands[playerIdx][idx];
+  hands[playerIdx].splice(idx, 1);
+
+  const eff = cardEffect(card);
+  let chosenNext = null;
+
+  if (eff === 'reset0') {
+    total = 0;
+    log.push(`${playerName(playerIdx)} 出了 ${cardLabel(card)}，點數歸零！`);
+  } else if (eff === 'add1' || eff === 'add') {
+    const add = cardAddValue(card);
+    const newTotal = total + add;
+    log.push(`${playerName(playerIdx)} 出了 ${cardLabel(card)}，點數 ${total} → ${newTotal}`);
+    total = newTotal;
+  } else if (eff === 'backOne') {
+    direction = -direction;
+    log.push(`${playerName(playerIdx)} 出了 4，方向反轉！現在變成${direction === 1 ? '順時針' : '逆時針'}`);
+  } else if (eff === 'chooseNext') {
+    chosenNext = choice;
+    log.push(`${playerName(playerIdx)} 出了 5，指定 ${playerName(choice)} 出牌！`);
+  } else if (eff === 'plusMinus10') {
+    const sign = choice === '-' ? -1 : 1;
+    const newTotal = Math.max(0, total + sign * 10);
+    log.push(`${playerName(playerIdx)} 出了 10，選擇 ${sign > 0 ? '+10' : '-10'}，點數 ${total} → ${newTotal}`);
+    total = newTotal;
+  } else if (eff === 'skipOne') {
+    log.push(`${playerName(playerIdx)} 出了 J，PASS！跳過下一位`);
+  } else if (eff === 'plusMinus20') {
+    const sign = choice === '-' ? -1 : 1;
+    const newTotal = Math.max(0, total + sign * 20);
+    log.push(`${playerName(playerIdx)} 出了 Q，選擇 ${sign > 0 ? '+20' : '-20'}，點數 ${total} → ${newTotal}`);
+    total = newTotal;
+  } else if (eff === 'setTo99') {
+    total = 99;
+    log.push(`${playerName(playerIdx)} 出了 K，點數直接變成 99！`);
+  }
+
+  let busted = false;
+  if (total > 99) {
+    busted = true;
+    active[playerIdx] = false;
+    log.push(`💥 ${playerName(playerIdx)} 爆了！點數超過 99，出局！`);
+    total = totalBeforePlay; // 退回這位玩家出牌「之前」的點數，不是退回99
+    log.push(`點數退回 ${total}，換下一位繼續`);
+  }
+
+  if (!busted && deck.length > 0) {
+    hands[playerIdx].push(deck.pop());
+  }
+
+  const remaining = active.filter(Boolean).length;
+  if (remaining <= 1) {
+    const winner = active.findIndex(a => a);
+    log.push(`遊戲結束！${winner >= 0 ? playerName(winner) : '沒有人'} 獲勝！`);
+    return { ...game, hands, deck, log, active, total, direction, topCard: card, phase: 'gameover', winner };
+  }
+
+  let next;
+  if (eff === 'chooseNext' && !busted) {
+    next = active[chosenNext] ? chosenNext : nextActiveFrom(active, playerIdx, direction);
+  } else if (eff === 'skipOne' && !busted) {
+    const skipped = nextActiveFrom(active, playerIdx, direction);
+    next = nextActiveFrom(active, skipped, direction);
+  } else {
+    next = nextActiveFrom(active, playerIdx, direction);
+  }
+
+  return { ...game, hands, deck, log, active, total, direction, topCard: card, turn: next, phase: 'playing' };
+}
+
+// 手上沒有牌了：直接出局（點數不變），換下一位繼續
+function bustOut(game, playerIdx) {
+  let active = [...game.active];
+  let log = [...game.log];
+  active[playerIdx] = false;
+  log.push(`${playerName(playerIdx)} 手上沒有牌了，直接出局！點數維持在 ${game.total}`);
+
+  const remaining = active.filter(Boolean).length;
+  if (remaining <= 1) {
+    const winner = active.findIndex(a => a);
+    log.push(`遊戲結束！${winner >= 0 ? playerName(winner) : '沒有人'} 獲勝！`);
+    return { ...game, active, log, phase: 'gameover', winner };
+  }
+
+  const next = nextActiveFrom(active, playerIdx, game.direction);
+  return { ...game, active, log, turn: next, phase: 'playing' };
+}
+
+function runAiTurn(game) {
+  const playerIdx = game.turn;
+  const hand = game.hands[playerIdx];
+  const others = [0, 1, 2, 3].filter(i => i !== playerIdx && game.active[i]);
+
+  function simulate(card, assumedChoice) {
+    const eff = cardEffect(card);
+    if (eff === 'reset0') return 0;
+    if (eff === 'add1') return game.total + 1;
+    if (eff === 'add') return game.total + cardAddValue(card);
+    if (eff === 'plusMinus10') return Math.max(0, game.total + (assumedChoice === '-' ? -10 : 10));
+    if (eff === 'plusMinus20') return Math.max(0, game.total + (assumedChoice === '-' ? -20 : 20));
+    if (eff === 'setTo99') return 99;
+    return game.total;
+  }
+
+  const candidates = hand.map(c => {
+    const eff = cardEffect(c);
+    let choice = null;
+    if (eff === 'plusMinus10' || eff === 'plusMinus20') {
+      const plus = simulate(c, '+');
+      choice = plus <= 99 ? '+' : '-';
+    }
+    const resultTotal = simulate(c, choice);
+    return { card: c, choice, resultTotal, safe: resultTotal <= 99 };
+  });
+
+  const safeOnes = candidates.filter(c => c.safe);
+  let chosen;
+  if (safeOnes.length > 0) {
+    safeOnes.sort((a, b) => b.resultTotal - a.resultTotal);
+    chosen = safeOnes[0];
+  } else {
+    chosen = candidates[0];
+  }
+
+  let targetChoice = chosen.choice;
+  if (cardEffect(chosen.card) === 'chooseNext') {
+    targetChoice = others.includes(0) ? 0 : others[Math.floor(Math.random() * others.length)];
+  }
+
+  return playCard(game, playerIdx, chosen.card.id, targetChoice);
+}
+
+// --- UI ---
+function CardView({ card, faceDown, onClick, dim }) {
+  if (faceDown) {
+    return <div className="rounded-md bg-gradient-to-br from-amber-500 to-amber-700 border-2 border-white shadow" style={{ width: '2.5rem', height: '3.5rem' }} />;
+  }
+  const red = isRed(card.suit);
+  return (
+    <button
+      onClick={onClick}
+      disabled={!onClick}
+      className={`w-14 h-20 sm:w-16 sm:h-24 rounded-md bg-white border-2 border-gray-300 shadow flex flex-col items-center justify-center font-bold leading-none select-none relative
+        ${red ? 'text-red-600' : 'text-gray-800'}
+        ${onClick ? 'hover:-translate-y-2 transition-transform cursor-pointer' : ''}
+        ${dim ? 'opacity-40' : ''}`}
+    >
+      <div className="text-base sm:text-lg">{rankLabel(card.rank)}</div>
+      <div className="text-lg sm:text-xl">{card.suit}</div>
+      <div className="text-[9px] sm:text-[10px] text-indigo-500 font-semibold mt-0.5">{cardBadge(card)}</div>
+    </button>
+  );
+}
+
+function totalColor(total) {
+  if (total >= 90) return 'text-red-500';
+  if (total >= 70) return 'text-yellow-400';
+  return 'text-green-400';
+}
+
+function App() {
+  const [game, setGame] = useState(() => initGame());
+  const [pending, setPending] = useState(null); // { cardId, type: 'math'|'target', card, expected, wrong }
+  const [mathInput, setMathInput] = useState('');
+
+  useEffect(() => {
+    if (game.phase === 'playing' && game.turn !== 0) {
+      const t = setTimeout(() => {
+        setGame(g => {
+          if (g.phase !== 'playing' || g.turn === 0) return g;
+          if (g.hands[g.turn].length === 0) return bustOut(g, g.turn);
+          return runAiTurn(g);
+        });
+      }, 900);
+      return () => clearTimeout(t);
+    }
+  }, [game.phase, game.turn]);
+
+  useEffect(() => { setPending(null); setMathInput(''); }, [game.turn, game.phase]);
+
+  const handleHumanCardClick = (card) => {
+    if (game.phase !== 'playing' || game.turn !== 0 || pending) return;
+    const eff = cardEffect(card);
+    if (eff === 'chooseNext') { setPending({ cardId: card.id, type: 'target' }); return; }
+    if (eff === 'add1' || eff === 'add') {
+      setPending({ cardId: card.id, type: 'math', expected: [game.total + cardAddValue(card)] });
+      setMathInput('');
+      return;
+    }
+    if (eff === 'plusMinus10' || eff === 'plusMinus20') {
+      const amt = eff === 'plusMinus10' ? 10 : 20;
+      const expected = [...new Set([game.total + amt, Math.max(0, game.total - amt)])];
+      setPending({ cardId: card.id, type: 'math', amt, expected });
+      setMathInput('');
+      return;
+    }
+    // reset0 / setTo99 / backOne / skipOne：沒有加減運算，直接出牌
+    setGame(g => playCard(g, 0, card.id, null));
+  };
+
+  const resolveTarget = (choice) => {
+    const p = pending;
+    setPending(null);
+    setGame(g => playCard(g, 0, p.cardId, choice));
+  };
+
+  const submitMathAnswer = () => {
+    const val = parseInt(mathInput, 10);
+    if (Number.isNaN(val) || !pending.expected.includes(val)) {
+      setPending({ ...pending, wrong: true });
+      return;
+    }
+    const p = pending;
+    let choice = null;
+    if (p.amt) choice = (val === game.total + p.amt) ? '+' : '-';
+    setPending(null);
+    setMathInput('');
+    setGame(g => playCard(g, 0, p.cardId, choice));
+  };
+
+  const cancelPending = () => { setPending(null); setMathInput(''); };
+
+  const restart = () => { setGame(initGame()); setPending(null); setMathInput(''); };
+
+  const humanHand = game.hands[0];
+
+  return (
+    <div className="min-h-screen bg-indigo-950 font-sans flex flex-col">
+      <div className="flex items-center justify-between px-4 py-2 bg-indigo-900 text-white text-sm">
+        <a href="addition_game.html" className="underline hover:text-indigo-200">← 回加法遊戲選單</a>
+        <div className="font-bold">🔢 99</div>
+        <button onClick={restart} className="underline hover:text-indigo-200">重新開始</button>
+      </div>
+
+      <div className="flex-1 flex flex-col items-center justify-between p-2 sm:p-4 gap-3 max-w-4xl mx-auto w-full">
+
+        <PlayerRow idx={2} game={game} />
+
+        <div className="w-full flex items-center justify-between gap-2">
+          <PlayerRow idx={3} game={game} />
+
+          <div className="flex-1 bg-indigo-800/60 rounded-2xl border-4 border-indigo-600 p-4 flex flex-col items-center gap-2 min-h-[180px]">
+            <div className={`text-5xl sm:text-6xl font-mono font-bold ${totalColor(game.total)}`}>{game.total}</div>
+            <div className="text-indigo-200 text-xs sm:text-sm">滿 99 就爆！牌堆剩餘 {game.deck.length} 張</div>
+            <div className="text-indigo-100 text-sm">輪到：<span className="font-bold">{game.phase === 'gameover' ? '-' : playerName(game.turn)}</span></div>
+            <div className="text-indigo-200 text-xs">{game.direction === 1 ? '↻ 順時針' : '↺ 逆時針'}</div>
+            {game.topCard && (
+              <div className="mt-1">
+                <CardView card={game.topCard} />
+              </div>
+            )}
+          </div>
+
+          <PlayerRow idx={1} game={game} />
+        </div>
+
+        <div className="w-full bg-black/30 rounded-lg p-2 text-indigo-100 text-xs h-16 overflow-y-auto">
+          {game.log.slice(-5).map((l, i) => <div key={i}>{l}</div>)}
+        </div>
+
+        {pending && pending.type === 'math' && (
+          <div className="w-full bg-yellow-100 border-2 border-yellow-400 rounded-xl p-3 text-center animate-fade-in">
+            <div className="font-bold text-yellow-800 mb-2">
+              現在點數是 {game.total}{pending.amt ? `，這張牌可以 +${pending.amt} 或 -${pending.amt}` : ''}，出牌後點數會變成多少？
+            </div>
+            <div className="flex justify-center items-center gap-2">
+              <input
+                type="number"
+                value={mathInput}
+                onChange={e => { setMathInput(e.target.value); if (pending.wrong) setPending({ ...pending, wrong: false }); }}
+                onKeyDown={e => { if (e.key === 'Enter') submitMathAnswer(); }}
+                autoFocus
+                className="w-24 h-12 text-center text-2xl font-bold rounded-lg border-2 border-yellow-500"
+              />
+              <button onClick={submitMathAnswer} className="bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-5 rounded-lg h-12">確認</button>
+              <button onClick={cancelPending} className="text-sm text-gray-500 underline">換一張牌</button>
+            </div>
+            {pending.wrong && <div className="text-red-600 font-bold mt-2">不對喔，再算一次看看！</div>}
+          </div>
+        )}
+
+        {pending && pending.type === 'target' && (
+          <div className="w-full bg-yellow-100 border-2 border-yellow-400 rounded-xl p-3 text-center animate-fade-in">
+            <div className="font-bold text-yellow-800 mb-2">指定誰出牌？</div>
+            <div className="flex justify-center gap-3 flex-wrap">
+              {[0, 1, 2, 3].filter(i => i !== 0 && game.active[i]).map(i => (
+                <button key={i} onClick={() => resolveTarget(i)} className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2 px-4 rounded-lg">{playerName(i)}</button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {game.phase === 'playing' && game.turn === 0 && game.active[0] && humanHand.length === 0 && (
+          <div className="w-full bg-yellow-100 border-2 border-yellow-400 rounded-xl p-3 text-center animate-fade-in">
+            <div className="font-bold text-yellow-800 mb-2">你手上沒有牌了，沒辦法再出牌</div>
+            <button onClick={() => setGame(g => bustOut(g, 0))} className="bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-6 rounded-lg">爆掉，讓其他人繼續玩</button>
+          </div>
+        )}
+
+        <div className="w-full bg-indigo-900/40 rounded-2xl p-3 flex flex-col items-center gap-1">
+          <div className="text-indigo-100 text-xs sm:text-sm">
+            你 {!game.active[0] && <span className="text-red-400 font-bold">（已出局）</span>}
+          </div>
+          <div className="flex flex-wrap justify-center gap-1 sm:gap-2">
+            {humanHand.map(c => (
+              <CardView
+                key={c.id}
+                card={c}
+                onClick={game.phase === 'playing' && game.turn === 0 && game.active[0] && !pending ? () => handleHumanCardClick(c) : undefined}
+              />
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {game.phase === 'gameover' && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center p-4 animate-fade-in">
+          <div className="bg-white rounded-2xl shadow-xl p-8 w-full max-w-md text-center">
+            <h2 className="text-3xl font-bold text-gray-800 mb-4">遊戲結束！🎉</h2>
+            <div className="text-xl mb-6">
+              {game.winner >= 0
+                ? <span>🏆 <span className="font-bold">{playerName(game.winner)}</span> 獲勝！</span>
+                : <span>沒有人獲勝</span>}
+            </div>
+            <div className="flex gap-3 justify-center">
+              <button onClick={restart} className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-6 rounded-xl shadow-lg">再玩一次</button>
+              <a href="addition_game.html" className="bg-gray-200 hover:bg-gray-300 text-gray-700 font-bold py-3 px-6 rounded-xl shadow-lg">回選單</a>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PlayerRow({ idx, game }) {
+  const count = game.hands[idx].length;
+  const isTurn = game.phase === 'playing' && game.turn === idx;
+  const eliminated = !game.active[idx];
+  return (
+    <div className={`flex flex-col items-center gap-1 ${isTurn ? 'scale-105' : ''} ${eliminated ? 'opacity-40' : ''}`}>
+      <div className={`text-white text-xs sm:text-sm font-bold px-2 py-0.5 rounded-full ${isTurn ? 'bg-yellow-500' : 'bg-indigo-900/50'}`}>
+        {playerName(idx)}{eliminated ? '（出局）' : isTurn ? '（思考中）' : ''}
+      </div>
+      <div className="flex gap-1">
+        {Array.from({ length: count }).map((_, i) => <CardView key={i} faceDown />)}
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>

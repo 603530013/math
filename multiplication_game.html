@@ -1,0 +1,821 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>乘法表大冒險</title>
+
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
+
+<style>
+  body { font-family: -apple-system, "PingFang TC", "Microsoft JhengHei", sans-serif; }
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: translateY(0); } }
+  .animate-fade-in { animation: fadeIn 0.25s ease-out; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel">
+const { useState, useEffect, useRef } = React;
+
+// --- Icons (rendered from the Lucide icon-node data, no DOM/React conflicts) ---
+function Icon({ name, size = 20, color = "currentColor", fill = "none", className = "", ...rest }) {
+  const node = window.lucide && window.lucide.icons[name];
+  if (!node) return null;
+  return React.createElement(
+    "svg",
+    {
+      xmlns: "http://www.w3.org/2000/svg",
+      width: size,
+      height: size,
+      viewBox: "0 0 24 24",
+      fill,
+      stroke: color,
+      strokeWidth: 2,
+      strokeLinecap: "round",
+      strokeLinejoin: "round",
+      className,
+      ...rest,
+    },
+    node.map(([tag, attrs], i) => React.createElement(tag, { key: i, ...attrs }))
+  );
+}
+const Play = (props) => <Icon name="Play" {...props} />;
+const Settings = (props) => <Icon name="Settings" {...props} />;
+const RefreshCw = (props) => <Icon name="RefreshCw" {...props} />;
+const Trophy = (props) => <Icon name="Trophy" {...props} />;
+const AlertTriangle = (props) => <Icon name="AlertTriangle" {...props} />;
+const CheckCircle = (props) => <Icon name="CheckCircle" {...props} />;
+const XCircle = (props) => <Icon name="XCircle" {...props} />;
+const Flame = (props) => <Icon name="Flame" {...props} />;
+const Skull = (props) => <Icon name="Skull" {...props} />;
+
+// --- Sound Synthesizer (Simple Cheer & Cry) ---
+const playSound = (type) => {
+  const AudioContext = window.AudioContext || window.webkitAudioContext;
+  if (!AudioContext) return;
+  const ctx = new AudioContext();
+  const now = ctx.currentTime;
+
+  switch (type) {
+    case 'correct': { // 歡呼聲 (登-登-登-登!) - C Major Arpeggio
+      const notes = [523.25, 659.25, 783.99, 1046.50]; // C5, E5, G5, C6
+      notes.forEach((freq, i) => {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+
+        osc.type = 'triangle'; // 三角波聽起來比較像電玩音效
+        osc.frequency.value = freq;
+
+        const startTime = now + (i * 0.1); // 每個音間隔 0.1秒
+
+        gain.gain.setValueAtTime(0, startTime);
+        gain.gain.linearRampToValueAtTime(0.1, startTime + 0.05);
+        gain.gain.exponentialRampToValueAtTime(0.001, startTime + 0.4);
+
+        osc.start(startTime);
+        osc.stop(startTime + 0.4);
+      });
+      break;
+    }
+
+    case 'wrong': { // 哭聲 (哇... 哇... 哇...) - Descending Slide
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+
+      osc.type = 'sawtooth'; // 鋸齒波比較有"哭"的感覺
+
+      // 第一聲 "哇"
+      osc.frequency.setValueAtTime(400, now);
+      osc.frequency.linearRampToValueAtTime(300, now + 0.3);
+
+      // 第二聲 "哇"
+      osc.frequency.setValueAtTime(300, now + 0.3);
+      osc.frequency.linearRampToValueAtTime(200, now + 0.6);
+
+      // 第三聲 "哇..." (拖長)
+      osc.frequency.setValueAtTime(200, now + 0.6);
+      osc.frequency.linearRampToValueAtTime(100, now + 1.2);
+
+      // 音量控制
+      gain.gain.setValueAtTime(0.1, now);
+      gain.gain.linearRampToValueAtTime(0.1, now + 0.2); // 持續
+      gain.gain.linearRampToValueAtTime(0.05, now + 0.3); // 變小
+      gain.gain.linearRampToValueAtTime(0.1, now + 0.35); // 變大
+      gain.gain.linearRampToValueAtTime(0.05, now + 0.6); // 變小
+      gain.gain.linearRampToValueAtTime(0.1, now + 0.65); // 變大
+      gain.gain.linearRampToValueAtTime(0.001, now + 1.2); // 消失
+
+      osc.start(now);
+      osc.stop(now + 1.2);
+      break;
+    }
+
+    case 'tick': { // 炸彈倒數 (保留)
+      const tOsc = ctx.createOscillator();
+      const tGain = ctx.createGain();
+      tOsc.connect(tGain);
+      tGain.connect(ctx.destination);
+      tOsc.type = 'square';
+      tOsc.frequency.setValueAtTime(1200, now);
+      tGain.gain.setValueAtTime(0.05, now);
+      tGain.gain.exponentialRampToValueAtTime(0.001, now + 0.05);
+      tOsc.start(now);
+      tOsc.stop(now + 0.05);
+      break;
+    }
+
+    case 'explosion': { // 爆炸 (保留)
+      const eOsc = ctx.createOscillator();
+      const eGain = ctx.createGain();
+      eOsc.connect(eGain);
+      eGain.connect(ctx.destination);
+      eOsc.type = 'sawtooth';
+      eOsc.frequency.setValueAtTime(100, now);
+      eOsc.frequency.exponentialRampToValueAtTime(10, now + 1.0);
+      eGain.gain.setValueAtTime(0.5, now);
+      eGain.gain.exponentialRampToValueAtTime(0.01, now + 1.5);
+      eOsc.start(now);
+      eOsc.stop(now + 1.5);
+      break;
+    }
+
+    default:
+      break;
+  }
+};
+
+// --- Helper Functions ---
+const shuffleArray = (array) => {
+  const newArr = [...array];
+  for (let i = newArr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [newArr[i], newArr[j]] = [newArr[j], newArr[i]];
+  }
+  return newArr;
+};
+
+// --- Components ---
+
+const GameMenu = ({ onStart }) => {
+  const [selectedNums, setSelectedNums] = useState([]); // 預設不選擇
+  const [level, setLevel] = useState(1);
+  const [l3Difficulty, setL3Difficulty] = useState('normal');
+
+  const toggleNum = (num) => {
+    if (selectedNums.includes(num)) {
+      setSelectedNums(selectedNums.filter(n => n !== num));
+    } else {
+      setSelectedNums([...selectedNums, num].sort((a, b) => a - b));
+    }
+  };
+
+  const handleStart = () => {
+    if (selectedNums.length === 0) {
+      alert("請至少選擇一個數字！");
+      return;
+    }
+    playSound('correct');
+
+    let timeLimit = 10;
+    if (level === 3) {
+        if (l3Difficulty === 'hell') timeLimit = 7;
+        if (l3Difficulty === 'super_hell') timeLimit = 5;
+    }
+
+    onStart(selectedNums, level, timeLimit);
+  };
+
+  return (
+    <div className="flex flex-col items-center justify-center min-h-screen bg-slate-50 p-4">
+      <div className="bg-white p-8 rounded-2xl shadow-xl w-full max-w-2xl border-4 border-blue-100">
+        <h1 className="text-4xl font-bold text-center text-blue-600 mb-2">✖️ 乘法表大冒險 ➗</h1>
+        <p className="text-center text-gray-500 mb-8">選擇你的挑戰等級與數字</p>
+
+        <div className="mb-8">
+          <h3 className="text-lg font-semibold text-gray-700 mb-3 flex items-center gap-2">
+            <Settings size={20} /> 步驟 1: 選擇乘法表數字 (多選)
+          </h3>
+          <div className="grid grid-cols-6 sm:grid-cols-11 gap-2 mb-4">
+            {[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map(num => (
+              <button
+                key={num}
+                onClick={() => { toggleNum(num); playSound('tick'); }}
+                className={`p-3 rounded-lg font-bold text-lg transition-all ${
+                  selectedNums.includes(num)
+                    ? 'bg-blue-500 text-white shadow-lg scale-105'
+                    : 'bg-gray-100 text-gray-400 hover:bg-gray-200'
+                }`}
+              >
+                {num}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="mb-8">
+          <h3 className="text-lg font-semibold text-gray-700 mb-3 flex items-center gap-2">
+            <Trophy size={20} /> 步驟 2: 選擇遊戲模式
+          </h3>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            {[
+              { lvl: 1, title: 'L1: 連連看', desc: '配對算式與答案', color: 'bg-green-100 border-green-500 text-green-700' },
+              { lvl: 2, title: 'L2: 貓咪模式', desc: '選擇正確的魚', color: 'bg-orange-100 border-orange-500 text-orange-700' },
+              { lvl: 3, title: 'L3: 拆彈模式', desc: '限時輸入解除炸彈', color: 'bg-red-100 border-red-500 text-red-700' },
+            ].map((mode) => (
+              <button
+                key={mode.lvl}
+                onClick={() => { setLevel(mode.lvl); playSound('tick'); }}
+                className={`p-4 border-2 rounded-xl text-left transition-all relative overflow-hidden ${
+                  level === mode.lvl ? `${mode.color} ring-2 ring-offset-2 ring-blue-300 shadow-md` : 'bg-white border-gray-200 hover:bg-gray-50'
+                }`}
+              >
+                <div className="font-bold text-lg">{mode.title}</div>
+                <div className="text-sm opacity-80">{mode.desc}</div>
+              </button>
+            ))}
+          </div>
+
+          {level === 3 && (
+            <div className="mt-4 bg-red-50 p-4 rounded-xl border border-red-200 animate-fade-in">
+              <h4 className="font-bold text-red-800 mb-3 text-sm flex items-center justify-center gap-2">
+                 炸彈倒數時間設定
+              </h4>
+              <div className="flex flex-col sm:flex-row gap-2 justify-center">
+                <button
+                   onClick={() => setL3Difficulty('normal')}
+                   className={`px-4 py-2 rounded-lg text-sm font-bold flex items-center justify-center gap-2 transition-all ${l3Difficulty === 'normal' ? 'bg-white border-2 border-gray-400 text-gray-800 shadow-sm' : 'text-gray-400 hover:bg-red-100'}`}
+                >
+                   正常 (10s)
+                </button>
+                <button
+                   onClick={() => setL3Difficulty('hell')}
+                   className={`px-4 py-2 rounded-lg text-sm font-bold flex items-center justify-center gap-2 transition-all ${l3Difficulty === 'hell' ? 'bg-white border-2 border-orange-500 text-orange-600 shadow-sm' : 'text-orange-300 hover:bg-red-100'}`}
+                >
+                   <Flame size={16} /> 地獄 (7s)
+                </button>
+                <button
+                   onClick={() => setL3Difficulty('super_hell')}
+                   className={`px-4 py-2 rounded-lg text-sm font-bold flex items-center justify-center gap-2 transition-all ${l3Difficulty === 'super_hell' ? 'bg-red-600 text-white shadow-md scale-105' : 'text-red-300 hover:bg-red-100'}`}
+                >
+                   <Skull size={16} /> 超地獄 (5s)
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+
+        <button
+          onClick={handleStart}
+          className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-4 rounded-xl text-xl shadow-lg transform active:scale-95 transition-all flex items-center justify-center gap-2"
+        >
+          <Play fill="currentColor" /> 開始挑戰
+        </button>
+      </div>
+    </div>
+  );
+};
+
+const ResultScreen = ({ score, total, wrongLog, onRestart }) => {
+  const percentage = Math.round((score / total) * 100);
+
+  useEffect(() => {
+    if (percentage >= 80) playSound('correct');
+    else playSound('wrong');
+  }, []);
+
+  return (
+    <div className="flex flex-col items-center justify-center min-h-screen bg-slate-50 p-4">
+      <div className="bg-white p-8 rounded-2xl shadow-xl w-full max-w-2xl text-center">
+        <h2 className="text-3xl font-bold text-gray-800 mb-4">遊戲結束! 🎉</h2>
+
+        <div className="flex justify-center items-center gap-8 mb-6">
+          <div className="text-center">
+            <div className="text-gray-500 text-sm">得分</div>
+            <div className="text-5xl font-bold text-blue-600">{score}</div>
+          </div>
+          <div className="text-gray-300 text-4xl">/</div>
+          <div className="text-center">
+            <div className="text-gray-500 text-sm">總題數</div>
+            <div className="text-5xl font-bold text-gray-700">{total}</div>
+          </div>
+        </div>
+
+        <div className="mb-8">
+          <div className="w-full bg-gray-200 rounded-full h-4 mb-2">
+            <div
+              className={`h-4 rounded-full ${percentage === 100 ? 'bg-green-500' : percentage >= 60 ? 'bg-yellow-500' : 'bg-red-500'}`}
+              style={{ width: `${percentage}%` }}
+            ></div>
+          </div>
+          <p className="text-gray-500">{percentage === 100 ? "完美無瑕！太強了！" : percentage >= 80 ? "很棒的成績！" : "再接再厲！"}</p>
+        </div>
+
+        {wrongLog.length > 0 ? (
+          <div className="bg-red-50 rounded-lg p-4 mb-6 text-left max-h-60 overflow-y-auto border border-red-100">
+            <h3 className="font-bold text-red-700 mb-3 flex items-center gap-2">
+              <AlertTriangle size={18} /> 答錯題目回顧
+            </h3>
+
+            <div className="flex justify-between items-center text-sm text-gray-500 mb-2 px-2 border-b border-red-200 pb-2">
+               <span className="w-1/3">回答錯誤的題目</span>
+               <span className="w-1/3 text-center">我的回答</span>
+               <span className="w-1/3 text-right">正確答案</span>
+            </div>
+
+            <div className="space-y-2">
+              {wrongLog.map((log, idx) => (
+                <div key={idx} className="flex justify-between items-center bg-white p-2 rounded shadow-sm">
+                  <span className="font-bold text-gray-700 text-lg w-1/3">{log.question}</span>
+                  <span className="text-red-500 w-1/3 text-center line-through">{log.userAnswer}</span>
+                  <span className="text-green-600 font-bold w-1/3 text-right">{log.correctAnswer}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : (
+          <div className="bg-green-50 p-6 rounded-lg mb-6 border border-green-100">
+            <p className="text-green-700 font-bold text-lg flex items-center justify-center gap-2">
+              <CheckCircle /> 全部答對！你是乘法大師！
+            </p>
+          </div>
+        )}
+
+        <button
+          onClick={onRestart}
+          className="bg-gray-800 hover:bg-gray-900 text-white font-bold py-3 px-8 rounded-xl shadow-lg flex items-center justify-center gap-2 mx-auto"
+        >
+          <RefreshCw size={20} /> 回主選單
+        </button>
+      </div>
+    </div>
+  );
+};
+
+// --- Level 1: Matching (Batched) ---
+const Level1Matching = ({ questions, onComplete }) => {
+  const BATCH_SIZE = 4;
+  const [currentIndex, setCurrentIndex] = useState(0);
+  const [currentBatch, setCurrentBatch] = useState([]);
+  const [shuffledAnswers, setShuffledAnswers] = useState([]);
+  const [selected, setSelected] = useState(null);
+  const [matchedIds, setMatchedIds] = useState([]);
+  const [dirtyQuestions, setDirtyQuestions] = useState(new Set());
+  const [wrongLog, setWrongLog] = useState([]);
+  const [score, setScore] = useState(0);
+
+  useEffect(() => {
+    if (currentIndex < questions.length) {
+      const batch = questions.slice(currentIndex, currentIndex + BATCH_SIZE);
+      setCurrentBatch(batch);
+      const answers = batch.map(q => ({
+        id: `ans-${q.id}`,
+        originalQId: q.id,
+        val: q.answer
+      }));
+      setShuffledAnswers(shuffleArray(answers));
+      setMatchedIds([]);
+    } else {
+      onComplete(score, wrongLog);
+    }
+  }, [currentIndex]);
+
+  useEffect(() => {
+    if (currentBatch.length > 0 && matchedIds.length >= currentBatch.length * 2) {
+      setTimeout(() => {
+        setCurrentIndex(prev => prev + BATCH_SIZE);
+      }, 1000);
+    }
+  }, [matchedIds]);
+
+  const handleCardClick = (id, type, val, displayQ) => {
+    if (matchedIds.includes(id)) return;
+
+    if (!selected) playSound('tick');
+
+    if (!selected) {
+      setSelected({ id, type, val, displayQ });
+      return;
+    }
+
+    if (selected.id === id) {
+      setSelected(null);
+      return;
+    }
+
+    if (selected.type !== type) {
+      const qId = type === 'q' ? id : selected.id;
+
+      if (selected.val === val) {
+        playSound('correct');
+        setMatchedIds(prev => [...prev, id, selected.id]);
+
+        if (!dirtyQuestions.has(qId)) {
+            setScore(prev => prev + 1);
+        }
+
+        setSelected(null);
+      } else {
+        playSound('wrong');
+        const correctAns = currentBatch.find(q => q.id === (type === 'q' ? id : selected.id?.replace('ans-', '')))?.answer || val;
+        const qText = type === 'q' ? displayQ : selected.displayQ;
+        const userWrongVal = type === 'a' ? val : selected.val;
+
+        setDirtyQuestions(prev => new Set(prev).add(qId));
+        setWrongLog(prev => [...prev, {
+            question: qText || "配對",
+            userAnswer: userWrongVal,
+            correctAnswer: correctAns
+        }]);
+
+        setSelected(null);
+      }
+    } else {
+      playSound('tick');
+      setSelected({ id, type, val, displayQ });
+    }
+  };
+
+  return (
+    <div className="w-full max-w-4xl mx-auto">
+      <div className="mb-6 text-center">
+        <h2 className="text-2xl font-bold text-gray-700">L1 連連看</h2>
+        <p className="text-gray-500">將算式連到正確的答案 (進度: {Math.min(currentIndex + BATCH_SIZE, questions.length)} / {questions.length})</p>
+        <div className="text-sm text-blue-500">提示: 答錯過的題目該題不計分</div>
+      </div>
+
+      <div className="flex flex-col md:flex-row gap-12 justify-center items-stretch min-h-[400px]">
+        <div className="flex-1 space-y-4">
+          {currentBatch.map(q => (
+            <button
+              key={`q-${q.id}`}
+              onClick={() => handleCardClick(q.id, 'q', q.answer, q.question)}
+              disabled={matchedIds.includes(q.id)}
+              className={`w-full py-6 text-2xl font-bold rounded-xl shadow-md transition-all border-2
+                ${matchedIds.includes(q.id)
+                  ? 'bg-gray-100 text-gray-400 border-transparent opacity-0 pointer-events-none'
+                  : selected?.id === q.id
+                    ? 'bg-yellow-100 border-yellow-400 text-yellow-800 scale-105 shadow-lg'
+                    : 'bg-white border-blue-100 text-blue-600 hover:border-blue-300'
+                }`}
+            >
+              {q.question}
+            </button>
+          ))}
+        </div>
+
+        <div className="flex-1 space-y-4">
+          {shuffledAnswers.map(a => (
+            <button
+              key={a.id}
+              onClick={() => handleCardClick(a.id, 'a', a.val)}
+              disabled={matchedIds.includes(a.id)}
+              className={`w-full py-6 text-2xl font-bold rounded-xl shadow-md transition-all border-2
+                ${matchedIds.includes(a.id)
+                  ? 'bg-green-100 text-green-400 border-transparent opacity-0 pointer-events-none'
+                  : selected?.id === a.id
+                    ? 'bg-yellow-100 border-yellow-400 text-yellow-800 scale-105 shadow-lg'
+                    : 'bg-white border-purple-100 text-purple-600 hover:border-purple-300'
+                }`}
+            >
+              {a.val}
+            </button>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// --- Level 2: Cat Mode (Choice) ---
+const Level2Cat = ({ questions, onComplete }) => {
+  const [idx, setIdx] = useState(0);
+  const [score, setScore] = useState(0);
+  const [wrongLog, setWrongLog] = useState([]);
+  const [status, setStatus] = useState('waiting');
+  const [options, setOptions] = useState([]);
+
+  const currentQ = questions[idx];
+
+  useEffect(() => {
+    if (!currentQ) return;
+
+    const ans = currentQ.answer;
+    const num1 = parseInt(currentQ.question.split('×')[0]);
+    let d1 = ans + num1;
+    let d2 = ans - num1;
+    if (d2 < 0) d2 = ans + (num1 * 2) + 1;
+    if (d1 === d2) d1 += 1;
+
+    const opts = shuffleArray([ans, d1, d2]);
+    setOptions(opts);
+    setStatus('waiting');
+  }, [idx, currentQ]);
+
+  const handleAnswer = (val) => {
+    if (status !== 'waiting') return;
+
+    if (val === currentQ.answer) {
+      setScore(s => s + 1);
+      setStatus('correct');
+      playSound('correct');
+    } else {
+      setWrongLog(prev => [...prev, {
+        question: currentQ.question,
+        userAnswer: val,
+        correctAnswer: currentQ.answer
+      }]);
+      setStatus('wrong');
+      playSound('wrong');
+    }
+
+    setTimeout(() => {
+      if (idx + 1 < questions.length) {
+        setIdx(idx + 1);
+      } else {
+        const finalScore = val === currentQ.answer ? score + 1 : score;
+        const finalLog = val !== currentQ.answer ? [...wrongLog, {question: currentQ.question, userAnswer: val, correctAnswer: currentQ.answer}] : wrongLog;
+        onComplete(finalScore, finalLog);
+      }
+    }, 1500);
+  };
+
+  if (!currentQ) return <div>Loading...</div>;
+
+  return (
+    <div className="w-full max-w-2xl mx-auto text-center">
+      <div className="mb-4 flex justify-between text-gray-500 font-bold">
+        <span>Level 2: 貓咪模式</span>
+        <span>{idx + 1} / {questions.length}</span>
+      </div>
+
+      <div className="relative mb-12">
+        <div className="text-9xl mb-4 transition-transform duration-300" style={{ transform: status === 'correct' ? 'scale(1.1)' : 'scale(1)' }}>
+          {status === 'waiting' ? '🐱' : status === 'correct' ? '😸' : '😿'}
+        </div>
+
+        <div className="bg-white border-4 border-orange-200 rounded-3xl p-6 shadow-lg inline-block min-w-[200px] relative">
+           {status === 'correct' ? (
+             <span className="text-2xl font-bold text-green-600 animate-bounce block">飽嗝! Burp! 💨</span>
+           ) : status === 'wrong' ? (
+             <div className="flex flex-col">
+               <span className="text-xl font-bold text-red-500 mb-1">肚子餓...</span>
+               <span className="text-sm text-gray-400">正解: {currentQ.answer}</span>
+             </div>
+           ) : (
+             <span className="text-5xl font-bold text-gray-800">{currentQ.question}</span>
+           )}
+        </div>
+      </div>
+
+      <div className="grid grid-cols-3 gap-6">
+        {options.map((opt, i) => (
+          <button
+            key={i}
+            onClick={() => handleAnswer(opt)}
+            disabled={status !== 'waiting'}
+            className={`group relative h-32 flex flex-col items-center justify-center transition-all duration-300 ${status !== 'waiting' ? 'opacity-50 cursor-not-allowed' : 'hover:-translate-y-2'}`}
+          >
+            <div className={`text-6xl absolute z-0 transition-all ${status !== 'waiting' && opt === currentQ.answer ? 'scale-125 drop-shadow-[0_0_15px_rgba(34,197,94,0.8)]' : ''}`}>🐟</div>
+            <span className="relative z-10 text-xl font-bold bg-white/80 px-2 rounded-full mt-1 text-blue-800 group-hover:bg-white">{opt}</span>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+};
+
+// --- Level 3: Bomb Mode (Input) ---
+const Level3Bomb = ({ questions, onComplete, timeLimit }) => {
+  const [idx, setIdx] = useState(0);
+  const [score, setScore] = useState(0);
+  const [wrongLog, setWrongLog] = useState([]);
+  const [timeLeft, setTimeLeft] = useState(timeLimit);
+  const [inputVal, setInputVal] = useState('');
+  const [status, setStatus] = useState('active');
+
+  const inputRef = useRef(null);
+  const currentQ = questions[idx];
+
+  useEffect(() => {
+    if (status !== 'active') return;
+
+    if (timeLeft <= 0) {
+      handleFail("時間到");
+      return;
+    }
+
+    const timer = setInterval(() => {
+      setTimeLeft(prev => prev - 0.1);
+      // Play tick sound every second (roughly)
+      if (Math.floor(timeLeft) !== Math.floor(timeLeft - 0.1)) {
+         // In lower time limits (<=7s), start ticking sooner
+         const warnTime = timeLimit <= 7 ? 4 : 5;
+         if (timeLeft <= warnTime) playSound('tick');
+      }
+    }, 100);
+
+    return () => clearInterval(timer);
+  }, [timeLeft, status]);
+
+  useEffect(() => {
+    setTimeLeft(timeLimit); // Reset timer to selected limit
+    setInputVal('');
+    setStatus('active');
+    setTimeout(() => inputRef.current?.focus(), 50);
+  }, [idx]);
+
+  const handleFail = (reason) => {
+    setStatus('exploded');
+    playSound('explosion');
+    const newLog = [...wrongLog, {
+      question: currentQ.question,
+      userAnswer: reason === "時間到" ? "逾時" : inputVal,
+      correctAnswer: currentQ.answer
+    }];
+    setWrongLog(newLog);
+
+    setTimeout(() => {
+      nextQuestion(score, newLog);
+    }, 2000);
+  };
+
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    if (status !== 'active') return;
+
+    const val = parseInt(inputVal);
+    if (val === currentQ.answer) {
+      setStatus('defused');
+      playSound('correct');
+      const newScore = score + 1;
+      setScore(newScore);
+      setTimeout(() => {
+        nextQuestion(newScore, wrongLog);
+      }, 1000);
+    } else {
+      handleFail();
+    }
+  };
+
+  const nextQuestion = (currentScore, currentLog) => {
+    if (idx + 1 < questions.length) {
+      setIdx(idx + 1);
+    } else {
+      onComplete(currentScore, currentLog);
+    }
+  };
+
+  if (!currentQ) return <div>Loading...</div>;
+
+  return (
+    <div className="w-full max-w-lg mx-auto text-center p-4">
+      <div className="mb-6 flex justify-between items-center text-gray-500 font-bold">
+        <span>L3: 拆彈專家 {timeLimit < 10 && "🔥"}</span>
+        <span>{idx + 1} / {questions.length}</span>
+      </div>
+
+      <div className="bg-gray-800 rounded-3xl p-8 shadow-2xl relative overflow-hidden text-white border-4 border-gray-600">
+        <div className="absolute top-0 left-0 w-full h-4 bg-gray-700">
+          <div
+            className={`h-full transition-all duration-100 ease-linear ${timeLeft < (timeLimit * 0.3) ? 'bg-red-600 animate-pulse' : 'bg-green-500'}`}
+            style={{ width: `${(timeLeft / timeLimit) * 100}%` }}
+          ></div>
+        </div>
+
+        <div className="mt-6 mb-8">
+          <div className={`text-6xl mb-4 transition-transform ${status === 'exploded' ? 'scale-150' : ''}`}>
+             {status === 'exploded' ? '💥' : status === 'defused' ? '✂️' : '💣'}
+          </div>
+
+          {status === 'exploded' ? (
+             <div className="animate-bounce">
+               <p className="text-red-500 font-bold text-2xl">爆炸了!</p>
+               <p className="text-gray-300">正解: {currentQ.answer}</p>
+             </div>
+          ) : status === 'defused' ? (
+             <p className="text-green-400 font-bold text-2xl">拆除成功!</p>
+          ) : (
+             <div className="text-6xl font-mono font-bold tracking-wider text-red-500 bg-black/30 p-4 rounded-xl inline-block border border-red-900 shadow-[0_0_10px_rgba(220,38,38,0.5)]">
+               {currentQ.question}
+             </div>
+          )}
+        </div>
+
+        <form onSubmit={handleSubmit} className="flex gap-2 justify-center">
+          <input
+            ref={inputRef}
+            type="number"
+            value={inputVal}
+            onChange={(e) => setInputVal(e.target.value)}
+            disabled={status !== 'active'}
+            placeholder="?"
+            className="w-24 h-16 text-center text-3xl font-bold text-black rounded-lg focus:outline-none focus:ring-4 focus:ring-yellow-400"
+          />
+          <button
+            type="submit"
+            disabled={status !== 'active'}
+            className="bg-red-600 hover:bg-red-700 text-white font-bold px-6 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            剪線
+          </button>
+        </form>
+      </div>
+    </div>
+  );
+};
+
+// --- Main App Controller ---
+
+function App() {
+  const [gameState, setGameState] = useState('menu');
+  const [gameData, setGameData] = useState({ questions: [], level: 1, timeLimit: 10 });
+  const [resultData, setResultData] = useState({ score: 0, wrongLog: [] });
+
+  const startGame = (selectedNums, level, timeLimit) => {
+    let qList = [];
+    selectedNums.forEach(num => {
+      for (let i = 0; i <= 10; i++) {
+        qList.push({
+          id: `${num}-${i}`,
+          question: `${num} × ${i}`,
+          answer: num * i
+        });
+      }
+    });
+    qList = shuffleArray(qList);
+
+    setGameData({ questions: qList, level, timeLimit });
+    setGameState('playing');
+  };
+
+  const handleGameComplete = (score, wrongLog) => {
+    setResultData({ score, wrongLog });
+    setGameState('result');
+  };
+
+  return (
+    <div className="min-h-screen bg-slate-50 font-sans">
+      {gameState === 'menu' && (
+        <GameMenu onStart={startGame} />
+      )}
+
+      {gameState === 'playing' && (
+        <div className="flex flex-col items-center justify-center min-h-screen p-4">
+          <div className="w-full max-w-4xl bg-white rounded-3xl shadow-xl p-6 min-h-[600px] flex items-center justify-center border-4 border-blue-50 relative">
+
+            <button
+              onClick={() => setGameState('menu')}
+              className="absolute top-4 right-4 text-gray-400 hover:text-red-500 p-2"
+            >
+              <XCircle />
+            </button>
+
+            {gameData.level === 1 && (
+              <Level1Matching
+                questions={gameData.questions}
+                onComplete={handleGameComplete}
+              />
+            )}
+            {gameData.level === 2 && (
+              <Level2Cat
+                questions={gameData.questions}
+                onComplete={handleGameComplete}
+              />
+            )}
+            {gameData.level === 3 && (
+              <Level3Bomb
+                questions={gameData.questions}
+                onComplete={handleGameComplete}
+                timeLimit={gameData.timeLimit}
+              />
+            )}
+          </div>
+        </div>
+      )}
+
+      {gameState === 'result' && (
+        <ResultScreen
+          score={resultData.score}
+          total={gameData.questions.length}
+          wrongLog={resultData.wrongLog}
+          onRestart={() => setGameState('menu')}
+        />
+      )}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>

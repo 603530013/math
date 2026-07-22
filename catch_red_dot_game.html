@@ -1,0 +1,387 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>撿紅點</title>
+
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+<style>
+  body { font-family: -apple-system, "PingFang TC", "Microsoft JhengHei", sans-serif; }
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: translateY(0); } }
+  .animate-fade-in { animation: fadeIn 0.25s ease-out; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel">
+const { useState, useEffect } = React;
+
+// --- Card helpers ---
+const SUITS = ['♠', '♥', '♦', '♣'];
+const rankLabel = (rank) => rank === 1 ? 'A' : rank === 11 ? 'J' : rank === 12 ? 'Q' : rank === 13 ? 'K' : String(rank);
+const isRed = (suit) => suit === '♥' || suit === '♦';
+const cardLabel = (c) => `${rankLabel(c.rank)}${c.suit}`;
+const playerNames = ['你', '電腦1', '電腦2', '電腦3'];
+const playerName = (i) => playerNames[i];
+
+const shuffleArray = (array) => {
+  const newArr = [...array];
+  for (let i = newArr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [newArr[i], newArr[j]] = [newArr[j], newArr[i]];
+  }
+  return newArr;
+};
+
+function createDeck() {
+  const deck = [];
+  let id = 0;
+  SUITS.forEach(suit => {
+    for (let rank = 1; rank <= 13; rank++) {
+      deck.push({ id: id++, suit, rank });
+    }
+  });
+  return deck;
+}
+
+// 兩張牌是否能互吃：10以上(含10) 比對相同點數；1~9 比對和為10
+function canPairCapture(a, b) {
+  if (a.rank >= 10 || b.rank >= 10) return a.rank === b.rank;
+  return a.rank + b.rank === 10;
+}
+
+function getMatches(card, tableCards) {
+  return tableCards.filter(t => canPairCapture(card, t));
+}
+
+function cardPoints(card) {
+  const red = isRed(card.suit);
+  if (card.suit === '♠' && card.rank === 1) return 10; // 黑桃A 特例
+  if (!red) return 0;
+  if (card.rank === 1) return 20; // 紅A
+  if (card.rank >= 9) return 10; // 9,10,J,Q,K
+  return card.rank; // 2~8
+}
+
+// --- Game engine (pure functions over a single game-state object) ---
+function initGame() {
+  const deck = shuffleArray(createDeck());
+  const hands = [[], [], [], []];
+  for (let round = 0; round < 5; round++) {
+    for (let p = 0; p < 4; p++) {
+      hands[p].push(deck.pop());
+    }
+  }
+  const table = [];
+  for (let i = 0; i < 4; i++) table.push(deck.pop());
+
+  return {
+    deck, hands, table,
+    captured: [[], [], [], []],
+    turn: 0,
+    phase: 'playing', // 'playing' | 'gameover'
+    log: ['遊戲開始！輪到你出牌。'],
+    lastCapturer: null,
+    scores: null,
+    winners: null,
+  };
+}
+
+function advanceOrFinish(game, currentPlayerIdx) {
+  const allEmpty = game.hands.every(h => h.length === 0);
+  if (allEmpty) return finishGame(game);
+
+  let next = currentPlayerIdx;
+  for (let i = 0; i < 4; i++) {
+    next = (next + 1) % 4;
+    const hand = game.hands[next];
+    if (hand.length === 0) continue; // 這位玩家的牌已出完
+    const canCapture = hand.some(c => getMatches(c, game.table).length > 0);
+    if (canCapture || game.deck.length > 0) {
+      return { ...game, turn: next, phase: 'playing' };
+    }
+    // 手上沒有能吃的牌，牌堆也抽不了牌了：這位玩家這輪無法動作，換下一位
+  }
+  // 沒有人能再動作了（牌堆空了且沒人湊得出10）
+  return finishGame(game);
+}
+
+function finishGame(game) {
+  let table = [...game.table];
+  let captured = game.captured.map(c => [...c]);
+  let log = [...game.log];
+
+  if (table.length > 0 && game.lastCapturer !== null) {
+    captured[game.lastCapturer] = [...captured[game.lastCapturer], ...table];
+    log.push(`桌上剩餘的牌歸給最後吃牌的 ${playerName(game.lastCapturer)}。`);
+    table = [];
+  }
+
+  const scores = captured.map(pile => pile.reduce((s, c) => s + cardPoints(c), 0));
+  const maxScore = Math.max(...scores);
+  const winners = scores.map((s, i) => i).filter(i => scores[i] === maxScore);
+  log.push(`遊戲結束！${winners.map(playerName).join('、')} 獲勝，共 ${maxScore} 分！`);
+
+  return { ...game, table, captured, log, phase: 'gameover', scores, winners };
+}
+
+// 補牌：從牌堆抽牌把桌面補到 4 張；抽到的牌若能湊十就直接收回（收回後仍繼續補，直到補滿或牌堆抽完）
+function refillTable(table, deck, captured, playerIdx, log) {
+  while (table.length < 4 && deck.length > 0) {
+    const drawn = deck.pop();
+    const matches = getMatches(drawn, table);
+    if (matches.length > 0) {
+      const matchIds = new Set(matches.map(m => m.id));
+      table = table.filter(t => !matchIds.has(t.id));
+      captured[playerIdx] = [...captured[playerIdx], drawn, ...matches];
+      log.push(`${playerName(playerIdx)} 補牌抽到 ${cardLabel(drawn)}，湊十收回了 ${matches.map(cardLabel).join('、')}！`);
+    } else {
+      table.push(drawn);
+      log.push(`${playerName(playerIdx)} 補牌抽到 ${cardLabel(drawn)}，放到桌上。`);
+    }
+  }
+  return table;
+}
+
+// cardId 為 null 時代表「手上沒有能配對的牌」，改成抽一張牌來試（不動用手牌）
+function mainPlay(game, playerIdx, cardId) {
+  let hands = game.hands.map(h => [...h]);
+  let table = [...game.table];
+  let captured = game.captured.map(c => [...c]);
+  let deck = [...game.deck];
+  let log = [...game.log];
+  let lastCapturer = game.lastCapturer;
+
+  let playedCard;
+  const fromHand = cardId !== null;
+
+  if (fromHand) {
+    const idx = hands[playerIdx].findIndex(c => c.id === cardId);
+    playedCard = hands[playerIdx][idx];
+    hands[playerIdx].splice(idx, 1);
+  } else if (deck.length > 0) {
+    playedCard = deck.pop();
+    log.push(`${playerName(playerIdx)} 手上沒有可配對的牌，抽牌試試看...`);
+  } else {
+    // 沒有可吃的牌，牌堆也空了，這回合無法動作
+    return advanceOrFinish({ ...game, hands, table, captured, deck, log, lastCapturer }, playerIdx);
+  }
+
+  const matches = getMatches(playedCard, table);
+  if (matches.length > 0) {
+    const matchIds = new Set(matches.map(m => m.id));
+    table = table.filter(t => !matchIds.has(t.id));
+    captured[playerIdx] = [...captured[playerIdx], playedCard, ...matches];
+    lastCapturer = playerIdx;
+    log.push(fromHand
+      ? `${playerName(playerIdx)} 用 ${cardLabel(playedCard)} 吃掉了 ${matches.map(cardLabel).join('、')}`
+      : `${playerName(playerIdx)} 抽到 ${cardLabel(playedCard)}，湊十收回了 ${matches.map(cardLabel).join('、')}！`);
+  } else if (fromHand) {
+    // 理論上不會發生：能被選來出的手牌一定是可以吃牌的牌（見下方呼叫端邏輯）
+    table.push(playedCard);
+    log.push(`${playerName(playerIdx)} 沒有可吃的牌，打出了 ${cardLabel(playedCard)}`);
+  } else {
+    // 抽到的牌配對不到，就放入手牌，桌面維持原樣（不會超過4張）
+    hands[playerIdx] = [...hands[playerIdx], playedCard];
+    log.push(`${playerName(playerIdx)} 抽到 ${cardLabel(playedCard)}，配對不到，收進手牌。`);
+  }
+
+  const beforeCapturedCount = captured[playerIdx].length;
+  table = refillTable(table, deck, captured, playerIdx, log);
+  if (captured[playerIdx].length > beforeCapturedCount) lastCapturer = playerIdx;
+
+  const game2 = { ...game, hands, table, captured, deck, log, lastCapturer };
+  return advanceOrFinish(game2, playerIdx);
+}
+
+function runAiTurn(game) {
+  const playerIdx = game.turn;
+  const hand = game.hands[playerIdx];
+  const capturable = hand.filter(c => getMatches(c, game.table).length > 0);
+
+  if (capturable.length === 0) return mainPlay(game, playerIdx, null);
+
+  let best = null, bestScore = -1;
+  capturable.forEach(c => {
+    const m = getMatches(c, game.table);
+    const pts = cardPoints(c) + m.reduce((s, x) => s + cardPoints(x), 0);
+    if (pts > bestScore) { bestScore = pts; best = c; }
+  });
+  return mainPlay(game, playerIdx, best.id);
+}
+
+// --- UI ---
+function CardView({ card, faceDown, onClick, highlight, dim }) {
+  if (faceDown) {
+    return <div className="w-9 h-13 sm:w-12 sm:h-17 rounded-md bg-gradient-to-br from-indigo-500 to-indigo-700 border-2 border-white shadow" style={{ width: '2.5rem', height: '3.5rem' }} />;
+  }
+  const red = isRed(card.suit);
+  return (
+    <button
+      onClick={onClick}
+      disabled={!onClick}
+      className={`w-11 h-16 sm:w-14 sm:h-20 rounded-md bg-white border-2 shadow flex flex-col items-center justify-center font-bold leading-none select-none
+        ${red ? 'text-red-600' : 'text-gray-800'}
+        ${highlight ? 'border-yellow-400 ring-4 ring-yellow-300 -translate-y-2' : 'border-gray-300'}
+        ${onClick ? 'hover:-translate-y-2 transition-transform cursor-pointer' : ''}
+        ${dim ? 'opacity-40' : ''}`}
+    >
+      <div className="text-sm sm:text-lg">{rankLabel(card.rank)}</div>
+      <div className="text-base sm:text-xl">{card.suit}</div>
+    </button>
+  );
+}
+
+function App() {
+  const [game, setGame] = useState(() => initGame());
+  const [warning, setWarning] = useState('');
+
+  useEffect(() => {
+    if (game.phase !== 'playing') return;
+    const turn = game.turn;
+    const hand = game.hands[turn];
+    const hasCapture = hand.some(c => getMatches(c, game.table).length > 0);
+    // AI 一律自動出牌；輪到你但手上沒有能配對的牌時，也自動抽牌（沒有選擇的餘地）
+    if (turn !== 0 || !hasCapture) {
+      const t = setTimeout(() => {
+        setGame(g => {
+          if (g.phase !== 'playing' || g.turn !== turn) return g;
+          if (g.turn !== 0) return runAiTurn(g);
+          const stillNoCapture = !g.hands[0].some(c => getMatches(c, g.table).length > 0);
+          return stillNoCapture ? mainPlay(g, 0, null) : g;
+        });
+      }, turn === 0 ? 900 : 800);
+      return () => clearTimeout(t);
+    }
+  }, [game.phase, game.turn]);
+
+  useEffect(() => { setWarning(''); }, [game.turn, game.phase]);
+
+  const humanHand = game.hands[0];
+  const humanCapturable = new Set(
+    humanHand.filter(c => getMatches(c, game.table).length > 0).map(c => c.id)
+  );
+
+  const handleHumanCardClick = (card) => {
+    if (game.phase !== 'playing' || game.turn !== 0 || humanCapturable.size === 0) return;
+    if (!humanCapturable.has(card.id)) {
+      setWarning('你手上有可以吃的牌，必須先吃牌！');
+      return;
+    }
+    setWarning('');
+    setGame(g => mainPlay(g, 0, card.id));
+  };
+
+  const restart = () => { setGame(initGame()); setWarning(''); };
+
+  return (
+    <div className="min-h-screen bg-green-800 font-sans flex flex-col">
+      <div className="flex items-center justify-between px-4 py-2 bg-green-900 text-white text-sm">
+        <a href="addition_game.html" className="underline hover:text-green-200">← 回加法遊戲選單</a>
+        <div className="font-bold">🃏 撿紅點</div>
+        <button onClick={restart} className="underline hover:text-green-200">重新開始</button>
+      </div>
+
+      <div className="flex-1 flex flex-col items-center justify-between p-2 sm:p-4 gap-2 max-w-4xl mx-auto w-full">
+
+        {/* Top: AI 2 */}
+        <PlayerRow idx={2} game={game} />
+
+        <div className="w-full flex items-center justify-between gap-2">
+          {/* Left: AI 3 */}
+          <PlayerRow idx={3} game={game} vertical />
+
+          {/* Center table */}
+          <div className="flex-1 bg-green-700/60 rounded-2xl border-4 border-green-600 p-3 flex flex-col items-center gap-2 min-h-[160px]">
+            <div className="text-green-100 text-xs sm:text-sm">牌堆剩餘 {game.deck.length} 張　|　輪到：<span className="font-bold">{game.phase === 'gameover' ? '-' : playerName(game.turn)}</span></div>
+            <div className="flex flex-wrap justify-center gap-1 sm:gap-2">
+              {game.table.map(c => <CardView key={c.id} card={c} />)}
+              {game.table.length === 0 && <div className="text-green-200 text-sm py-4">桌上沒有牌</div>}
+            </div>
+          </div>
+
+          {/* Right: AI 1 */}
+          <PlayerRow idx={1} game={game} vertical />
+        </div>
+
+        {/* Log */}
+        <div className="w-full bg-black/30 rounded-lg p-2 text-green-100 text-xs h-16 overflow-y-auto">
+          {game.log.slice(-5).map((l, i) => <div key={i}>{l}</div>)}
+        </div>
+
+        {/* Warning */}
+        {warning && <div className="text-yellow-200 font-bold text-sm animate-fade-in">{warning}</div>}
+
+        {game.phase === 'playing' && game.turn === 0 && humanCapturable.size === 0 && humanHand.length > 0 && (
+          <div className="text-green-200 text-sm animate-fade-in">你手上沒有能配對的牌，自動抽牌中...</div>
+        )}
+
+        {/* Human hand */}
+        <div className="w-full bg-green-900/40 rounded-2xl p-3 flex flex-col items-center gap-1">
+          <div className="text-green-100 text-xs sm:text-sm">你　已吃 {game.captured[0].length} 張</div>
+          <div className="flex flex-wrap justify-center gap-1 sm:gap-2">
+            {humanHand.map(c => (
+              <CardView
+                key={c.id}
+                card={c}
+                onClick={game.phase === 'playing' && game.turn === 0 && humanCapturable.size > 0 ? () => handleHumanCardClick(c) : undefined}
+                highlight={game.phase === 'playing' && game.turn === 0 && humanCapturable.has(c.id)}
+              />
+            ))}
+            {humanHand.length === 0 && <div className="text-green-200 text-sm py-4">手牌已出完</div>}
+          </div>
+        </div>
+      </div>
+
+      {game.phase === 'gameover' && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center p-4 animate-fade-in">
+          <div className="bg-white rounded-2xl shadow-xl p-8 w-full max-w-md text-center">
+            <h2 className="text-3xl font-bold text-gray-800 mb-4">遊戲結束！🎉</h2>
+            <div className="space-y-2 mb-6">
+              {[0, 1, 2, 3]
+                .map(i => ({ i, score: game.scores[i] }))
+                .sort((a, b) => b.score - a.score)
+                .map(({ i, score }) => (
+                  <div key={i} className={`flex justify-between items-center px-4 py-2 rounded-lg ${game.winners.includes(i) ? 'bg-yellow-100 font-bold' : 'bg-gray-50'}`}>
+                    <span>{game.winners.includes(i) ? '🏆 ' : ''}{playerName(i)}</span>
+                    <span>{score} 分</span>
+                  </div>
+                ))}
+            </div>
+            <div className="flex gap-3 justify-center">
+              <button onClick={restart} className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-6 rounded-xl shadow-lg">再玩一次</button>
+              <a href="addition_game.html" className="bg-gray-200 hover:bg-gray-300 text-gray-700 font-bold py-3 px-6 rounded-xl shadow-lg">回選單</a>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PlayerRow({ idx, game }) {
+  const count = game.hands[idx].length;
+  const isTurn = game.phase === 'playing' && game.turn === idx;
+  return (
+    <div className={`flex flex-col items-center gap-1 ${isTurn ? 'scale-105' : ''}`}>
+      <div className={`text-white text-xs sm:text-sm font-bold px-2 py-0.5 rounded-full ${isTurn ? 'bg-yellow-500' : 'bg-green-900/50'}`}>
+        {playerName(idx)}{isTurn ? '（思考中）' : ''}　已吃 {game.captured[idx].length}
+      </div>
+      <div className="flex gap-1">
+        {Array.from({ length: count }).map((_, i) => <CardView key={i} faceDown />)}
+        {count === 0 && <div className="text-green-200 text-xs py-2">已出完</div>}
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>
