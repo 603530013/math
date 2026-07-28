@@ -771,10 +771,9 @@ const Level4FindNumber = ({ questions, onComplete, timeLimit }) => {
   const [score, setScore] = useState(0);
   const [wrongLog, setWrongLog] = useState([]);
   const [timeLeft, setTimeLeft] = useState(timeLimit);
-  const [inputVal, setInputVal] = useState('');
+  const [lastPicked, setLastPicked] = useState(null);
   const [status, setStatus] = useState('active');
 
-  const inputRef = useRef(null);
   const currentQ = questions[idx];
 
   useEffect(() => {
@@ -798,9 +797,8 @@ const Level4FindNumber = ({ questions, onComplete, timeLimit }) => {
 
   useEffect(() => {
     setTimeLeft(timeLimit);
-    setInputVal('');
+    setLastPicked(null);
     setStatus('active');
-    setTimeout(() => inputRef.current?.focus(), 50);
   }, [idx]);
 
   const displayEquation = currentQ
@@ -809,14 +807,17 @@ const Level4FindNumber = ({ questions, onComplete, timeLimit }) => {
         : `${currentQ.num} × ( ) = ${currentQ.answer}`)
     : '';
   const correctValue = currentQ ? (currentQ.hideFirst ? currentQ.num : currentQ.multiplier) : null;
+  // 只要答案（乘積）是0，空格就算填任何數字都可以（不只限定 0×()=0 或 ()×0=0 這兩種）
+  const anyAnswerValid = currentQ ? currentQ.answer === 0 : false;
+  const correctAnswerLabel = anyAnswerValid ? '任何數字都可以' : correctValue;
 
-  const handleFail = (reason) => {
+  const handleFail = (reason, pickedLabel) => {
     setStatus('caught');
     playSound('explosion');
     const newLog = [...wrongLog, {
       question: displayEquation,
-      userAnswer: reason === "時間到" ? "逾時" : inputVal,
-      correctAnswer: correctValue
+      userAnswer: reason === "時間到" ? "逾時" : pickedLabel,
+      correctAnswer: correctAnswerLabel
     }];
     setWrongLog(newLog);
 
@@ -825,12 +826,14 @@ const Level4FindNumber = ({ questions, onComplete, timeLimit }) => {
     }, 2000);
   };
 
-  const handleSubmit = (e) => {
-    e.preventDefault();
+  const handleAnswer = (val, label) => {
     if (status !== 'active') return;
+    setLastPicked(label);
 
-    const val = parseInt(inputVal);
-    if (val === correctValue) {
+    // 遇到 ()×0=0 或 0×()=0 時，正確答法是按「任何數字都可以」，按具體數字反而算錯；
+    // 其他情況則要按出正確的那個數字，按「任何數字都可以」算錯。
+    const isCorrect = anyAnswerValid ? val === 'ANY' : val === correctValue;
+    if (isCorrect) {
       setStatus('found');
       playSound('correct');
       const newScore = score + 1;
@@ -839,7 +842,7 @@ const Level4FindNumber = ({ questions, onComplete, timeLimit }) => {
         nextQuestion(newScore, wrongLog);
       }, 1000);
     } else {
-      handleFail();
+      handleFail(null, label);
     }
   };
 
@@ -876,7 +879,7 @@ const Level4FindNumber = ({ questions, onComplete, timeLimit }) => {
           {status === 'caught' ? (
              <div className="animate-bounce">
                <p className="text-red-500 font-bold text-2xl">被逃走了!</p>
-               <p className="text-gray-300">正解: {correctValue}</p>
+               <p className="text-gray-300">正解: {correctAnswerLabel}</p>
              </div>
           ) : status === 'found' ? (
              <p className="text-green-400 font-bold text-2xl">抓到了!</p>
@@ -887,24 +890,25 @@ const Level4FindNumber = ({ questions, onComplete, timeLimit }) => {
           )}
         </div>
 
-        <form onSubmit={handleSubmit} className="flex gap-2 justify-center">
-          <input
-            ref={inputRef}
-            type="number"
-            value={inputVal}
-            onChange={(e) => setInputVal(e.target.value)}
-            disabled={status !== 'active'}
-            placeholder="?"
-            className="w-24 h-16 text-center text-3xl font-bold text-black rounded-lg focus:outline-none focus:ring-4 focus:ring-yellow-400"
-          />
+        <div className="grid grid-cols-6 gap-2">
+          {[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map(n => (
+            <button
+              key={n}
+              onClick={() => handleAnswer(n, String(n))}
+              disabled={status !== 'active'}
+              className="py-3 rounded-lg bg-white text-gray-800 font-bold text-xl shadow disabled:opacity-40 disabled:cursor-not-allowed hover:bg-purple-100 active:scale-95 transition-all"
+            >
+              {n}
+            </button>
+          ))}
           <button
-            type="submit"
+            onClick={() => handleAnswer('ANY', '任何數字')}
             disabled={status !== 'active'}
-            className="bg-purple-600 hover:bg-purple-700 text-white font-bold px-6 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed"
+            className="col-span-6 py-3 rounded-lg bg-yellow-400 text-gray-900 font-bold text-lg shadow disabled:opacity-40 disabled:cursor-not-allowed hover:bg-yellow-300 active:scale-95 transition-all"
           >
-            通緝
+            任何數字都可以！
           </button>
-        </form>
+        </div>
       </div>
     </div>
   );
