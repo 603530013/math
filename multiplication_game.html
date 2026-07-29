@@ -920,59 +920,50 @@ const Level5FindAllFactors = ({ questions, onComplete }) => {
   const [score, setScore] = useState(0);
   const [wrongLog, setWrongLog] = useState([]);
   const [found, setFound] = useState([]); // array of "a-b" strings, in the order found
-  const [inputVal, setInputVal] = useState('');
+  const [selectedA, setSelectedA] = useState(null);
+  const [selectedB, setSelectedB] = useState(null);
   const [feedback, setFeedback] = useState(null); // { type: 'error'|'dup', msg }
   const [cleared, setCleared] = useState(false);
 
-  const inputRef = useRef(null);
   const currentQ = questions[idx];
 
   useEffect(() => {
     setFound([]);
-    setInputVal('');
+    setSelectedA(null);
+    setSelectedB(null);
     setFeedback(null);
     setCleared(false);
-    setTimeout(() => inputRef.current?.focus(), 50);
   }, [idx]);
 
   if (!currentQ) return <div>Loading...</div>;
 
-  const parsePair = (raw) => {
-    const m = raw.match(/(\d+)\s*[x×X*、,，]\s*(\d+)/);
-    if (!m) return null;
-    return [parseInt(m[1], 10), parseInt(m[2], 10)];
-  };
-
-  const handleSubmit = (e) => {
-    e.preventDefault();
-    if (cleared) return;
-    const pair = parsePair(inputVal.trim());
-    if (!pair) {
-      setFeedback({ type: 'error', msg: '請輸入像「3x8」這樣的算式喔！' });
-      return;
-    }
-    const [a, b] = pair;
+  const handleConfirm = () => {
+    if (cleared || selectedA === null || selectedB === null) return;
+    const a = selectedA, b = selectedB;
     const key = `${a}-${b}`;
-    const isValid = a >= 1 && a <= 9 && b >= 1 && b <= 9 && a * b === currentQ.target;
+    const isValid = a * b === currentQ.target;
 
     if (!isValid) {
       playSound('wrong');
       setFeedback({ type: 'error', msg: `${a} × ${b} = ${a * b}，不等於 ${currentQ.target}，再試試看！` });
       setWrongLog(prev => [...prev, { question: `目標數字：${currentQ.target}`, userAnswer: `${a}×${b}`, correctAnswer: '不是正確配對' }]);
-      setInputVal('');
+      setSelectedA(null);
+      setSelectedB(null);
       return;
     }
 
     if (found.includes(key)) {
       setFeedback({ type: 'dup', msg: `${a} × ${b} 已經找過囉，換一組！` });
-      setInputVal('');
+      setSelectedA(null);
+      setSelectedB(null);
       return;
     }
 
     playSound('correct');
     const newFound = [...found, key];
     setFound(newFound);
-    setInputVal('');
+    setSelectedA(null);
+    setSelectedB(null);
     setFeedback(null);
     const newScore = score + 1;
     setScore(newScore);
@@ -988,6 +979,23 @@ const Level5FindAllFactors = ({ questions, onComplete }) => {
       }, 1200);
     }
   };
+
+  const NumberRow = ({ selected, onPick }) => (
+    <div className="grid grid-cols-9 gap-1">
+      {[1, 2, 3, 4, 5, 6, 7, 8, 9].map(n => (
+        <button
+          key={n}
+          onClick={() => onPick(n)}
+          disabled={cleared}
+          className={`py-2 rounded-lg font-bold text-lg shadow disabled:opacity-40 disabled:cursor-not-allowed active:scale-95 transition-all ${
+            selected === n ? 'bg-yellow-400 text-gray-900' : 'bg-white text-gray-800 hover:bg-teal-100'
+          }`}
+        >
+          {n}
+        </button>
+      ))}
+    </div>
+  );
 
   return (
     <div className="w-full max-w-lg mx-auto text-center p-4">
@@ -1020,22 +1028,27 @@ const Level5FindAllFactors = ({ questions, onComplete }) => {
         {cleared ? (
           <p className="text-green-400 font-bold text-2xl animate-bounce">🎉 全部找到了！</p>
         ) : (
-          <form onSubmit={handleSubmit} className="flex gap-2 justify-center">
-            <input
-              ref={inputRef}
-              type="text"
-              value={inputVal}
-              onChange={(e) => setInputVal(e.target.value)}
-              placeholder="例如 3x8"
-              className="w-32 h-14 text-center text-2xl font-bold text-black rounded-lg focus:outline-none focus:ring-4 focus:ring-yellow-400"
-            />
+          <div>
+            <div className="flex items-center justify-center gap-2 mb-3 text-3xl font-bold">
+              <span className="w-10 h-10 flex items-center justify-center bg-black/30 rounded-lg">{selectedA ?? '?'}</span>
+              <span>×</span>
+              <span className="w-10 h-10 flex items-center justify-center bg-black/30 rounded-lg">{selectedB ?? '?'}</span>
+              <span>=</span>
+              <span>{currentQ.target}</span>
+            </div>
+
+            <NumberRow selected={selectedA} onPick={setSelectedA} />
+            <div className="my-2 text-teal-300 font-bold">×</div>
+            <NumberRow selected={selectedB} onPick={setSelectedB} />
+
             <button
-              type="submit"
-              className="bg-teal-500 hover:bg-teal-600 text-white font-bold px-6 rounded-lg"
+              onClick={handleConfirm}
+              disabled={selectedA === null || selectedB === null}
+              className="mt-4 bg-teal-500 hover:bg-teal-600 text-white font-bold px-8 py-2 rounded-lg disabled:opacity-40 disabled:cursor-not-allowed"
             >
-              提交
+              確認
             </button>
-          </form>
+          </div>
         )}
 
         {feedback && !cleared && (
